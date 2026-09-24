@@ -1,0 +1,5 @@
+rules:
+  - id: no-print
+    language: python
+    pattern: "print($MSG)"
+    message: "Production code should use logging instead of print."
