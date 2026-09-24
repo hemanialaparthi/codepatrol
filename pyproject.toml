@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codepatrol"
+version = "0.1.0"
+description = "Configurable structural static analysis for Python projects"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PyYAML>=6.0,<7",
+    "tree-sitter>=0.25,<0.26",
+    "tree-sitter-python>=0.25,<0.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+codepatrol = "codepatrol.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["codepatrol*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
