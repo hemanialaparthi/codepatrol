@@ -15,12 +15,15 @@ def compile_policies(
         adapter = registry.get(policy.language)
         try:
             pattern = adapter.compile_pattern(policy.pattern)
-        except PolicyError:
-            raise
+        except PolicyError as exc:
+            raise PolicyError(
+                f"Rule '{policy.id}' has an invalid pattern: {exc}",
+                policy_id=policy.id,
+            ) from exc
         except Exception as exc:
             raise PolicyError(
-                f"Rule '{policy.id}' has an invalid pattern: {exc}"
+                f"Rule '{policy.id}' has an invalid pattern: {exc}",
+                policy_id=policy.id,
             ) from exc
         compiled.append(CompiledPolicy(policy=policy, pattern=pattern))
     return compiled
-
