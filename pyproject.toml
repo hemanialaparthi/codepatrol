@@ -12,6 +12,7 @@ dependencies = [
     "PyYAML>=6.0,<7",
     "tree-sitter>=0.25,<0.26",
     "tree-sitter-python>=0.25,<0.26",
+    "typer>=0.27,<0.28",
 ]
 
 [project.optional-dependencies]
@@ -25,4 +26,3 @@ include = ["codepatrol*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
