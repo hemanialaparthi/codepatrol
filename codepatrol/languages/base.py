@@ -7,6 +7,8 @@ from typing import Any
 
 @dataclass(frozen=True)
 class CompiledPattern:
+    """A parsed pattern and the identifiers used as metavariable sentinels."""
+
     root: Any
     source: bytes
     metavariables: dict[bytes, str]
@@ -30,4 +32,3 @@ class LanguageAdapter(ABC):
     @abstractmethod
     def compile_pattern(self, pattern: str) -> CompiledPattern:
         """Parse a user pattern and record any metavariable sentinels."""
-
