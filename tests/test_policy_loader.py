@@ -5,6 +5,7 @@ import pytest
 from codepatrol.errors import PolicyError
 from codepatrol.languages import default_registry
 from codepatrol.policy.loader import load_policies
+from codepatrol.policy.compiler import compile_policies
 
 
 def write_policy(path: Path, text: str) -> Path:
@@ -85,3 +86,51 @@ def test_malformed_yaml_fails(tmp_path):
     with pytest.raises(PolicyError, match="Malformed YAML"):
         load_policies(path, default_registry())
 
+
+@pytest.mark.parametrize("value", ["", "   ", "12", "[]"])
+def test_rule_id_must_be_a_non_empty_string(tmp_path, value):
+    path = write_policy(
+        tmp_path / "policies.yaml",
+        f"""rules:
+  - id: {value}
+    language: python
+    pattern: print($MSG)
+    message: Use logging.
+""",
+    )
+
+    with pytest.raises(PolicyError, match="id"):
+        load_policies(path, default_registry())
+
+
+def test_empty_rule_list_is_rejected(tmp_path):
+    path = write_policy(tmp_path / "policies.yaml", "rules: []\n")
+
+    with pytest.raises(PolicyError, match="at least one rule"):
+        load_policies(path, default_registry())
+
+
+def test_duplicate_yaml_mapping_key_is_rejected(tmp_path):
+    path = write_policy(
+        tmp_path / "policies.yaml",
+        "rules: []\nrules: []\n",
+    )
+
+    with pytest.raises(PolicyError, match="Malformed YAML"):
+        load_policies(path, default_registry())
+
+
+def test_invalid_pattern_is_rejected_before_scanning(tmp_path):
+    path = write_policy(
+        tmp_path / "policies.yaml",
+        """rules:
+  - id: invalid
+    language: python
+    pattern: print(
+    message: Broken pattern.
+""",
+    )
+    registry = default_registry()
+
+    with pytest.raises(PolicyError, match="Rule 'invalid'.*invalid pattern"):
+        compile_policies(load_policies(path, registry), registry)
