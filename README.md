@@ -136,6 +136,38 @@ to stdout, including for expected errors:
 codepatrol scan demo/project --policies demo/policies.yaml --json
 ```
 
+Default terminal output begins with one overall `PASS`, `FAIL`, or `ERROR` and
+a plain-language reason. A compact summary follows with policy status,
+violation count, functional-command outcome when requested, files scanned,
+policies checked, and checking-error count when nonzero. There is no separate
+policy-only `FAILED` banner in combined evaluations.
+
+Policy violations are numbered in deterministic report order. Each includes
+its project-relative start location, rule ID, policy message, and a
+syntax-highlighted, line-numbered copy of the exact matched source. The default
+view shows at most 10 violations and reports how many were omitted. Use
+`--verbose` or `-v` to show every violation, exact start/end ranges,
+selection/exclusion counts, project and test working directories, executed
+arguments, captured previews, and artifact paths:
+
+```bash
+codepatrol scan demo/project --policies demo/policies.yaml --verbose
+```
+
+Successful functional commands show only their outcome, raw exit code, and
+duration by default; CodePatrol does not claim how many tests ran. Failed,
+timed-out, interrupted, or unstartable commands also show the command,
+structured execution errors, bounded stdout/stderr previews, truncation state,
+and full-log paths. Policy and execution errors are displayed in sections
+separate from violations.
+
+Rich styling is used on interactive terminals. Status words remain present
+without color, long content wraps on narrow terminals, and redirected output
+is plain text. Set the conventional `NO_COLOR` environment variable to disable
+ANSI styling. User-controlled paths, messages, commands, snippets, and output
+are treated as literal text; terminal control characters are displayed in
+escaped form rather than executed.
+
 The CLI retains an explicit `scan` subcommand and is ready for additional
 commands. Use these commands to inspect its interface:
 
@@ -206,6 +238,131 @@ codepatrol scan demo/project/users.py --policies demo/policies.yaml
 codepatrol scan demo/project/does-not-exist.py --policies demo/policies.yaml
 ```
 
+## Running functional tests
+
+CodePatrol can run one user-supplied command after the policy scan and collect
+its result for later tooling. The runner is framework-independent: it neither
+requires pytest nor recognizes a fixed list of test frameworks.
+
+```bash
+codepatrol scan src \
+  --policies policies.yaml \
+  --test-command "python -m pytest tests -q" \
+  --test-cwd . \
+  --test-timeout 60 \
+  --json \
+  --output reports/evaluation.json
+
+codepatrol scan src --policies policies.yaml \
+  --test-command "python -m unittest discover"
+
+codepatrol scan src --policies policies.yaml --test-command "npm test"
+codepatrol scan src --policies policies.yaml --test-command "cargo test"
+codepatrol scan src --policies policies.yaml --test-command "go test ./..."
+codepatrol scan src --policies policies.yaml \
+  --test-command "./scripts/test.sh"
+```
+
+The included demo has a framework-neutral `unittest` suite that pytest can
+also collect. From the repository root, try either command:
+
+```bash
+codepatrol scan demo/project --policies demo/policies.yaml \
+  --test-command "python -m unittest discover -s demo/tests" --json
+
+codepatrol scan demo/project --policies demo/policies.yaml \
+  --test-command "python -m pytest demo/tests -q" --json
+```
+
+`--test-cwd` is resolved from the directory where CodePatrol was invoked and
+defaults to that invocation directory. The command inherits CodePatrol's
+environment and uses the executable selected by the user. CodePatrol never
+installs a dependency, substitutes a test command, or lets a later analysis
+stage alter it. `--test-timeout` must be greater than zero and defaults to 60
+seconds. Supplying `--test-cwd` or `--test-timeout` without `--test-command` is
+an error. Without `--test-command`, no subprocess is started and the original
+scan report schema and exit behavior are unchanged.
+
+### Command syntax and process behavior
+
+The command string is split with POSIX-style shell quoting so quoted paths and
+arguments containing spaces remain single arguments. It is then executed with
+`shell=False` and closed standard input. Shell syntax is deliberately not
+interpreted: pipes, redirection, glob expansion, environment-variable
+expansion, and `&&`/`;` command chaining are passed as ordinary arguments. Put
+complex behavior in a script, or explicitly invoke a shell, for example
+`--test-command "sh -c 'first && second'"`. Quoting follows POSIX rules on all
+platforms and therefore is not identical to `cmd.exe` or PowerShell parsing on
+Windows.
+
+The runner records the exact argument list, absolute working directory, raw
+exit code, elapsed monotonic duration, and stdout/stderr separately. A
+subprocess boundary is not a security sandbox: the command has the invoking
+user's filesystem and environment permissions.
+
+On POSIX systems CodePatrol places the command in a new process group, sends a
+termination signal to the group on timeout or interruption, and escalates to a
+kill signal after a short grace period. This normally cleans up descendants.
+On Windows, process-group creation and direct-process termination are used, but
+complete descendant cleanup is not guaranteed without an OS job object.
+Signals on POSIX may appear as negative raw exit codes.
+
+### Test outcomes and logs
+
+- `PASS`: the supplied test command exited successfully (exit code 0). This
+  does not establish that the framework discovered or executed any tests.
+- `FAIL`: the command completed with a nonzero exit code. Generic execution
+  does not guess whether that means assertion, collection, or configuration
+  failure.
+- `ERROR`: the command could not start, its working directory or inputs were
+  invalid, or its result could not be captured reliably.
+- `TIMEOUT`: it exceeded the configured time limit.
+- `INTERRUPTED`: execution was interrupted and cleanup was attempted.
+
+Reports contain bounded, UTF-8-with-replacement previews and explicit
+`truncated` flags. Complete stdout and stderr bytes are written to separate
+`stdout.log` and `stderr.log` artifacts, so non-UTF-8 output is retained.
+Each run uses a unique directory under `.codepatrol/artifacts/` in the
+invocation directory. These logs are ignored by Git, are not Python source
+files, and are retained until the user or their workspace cleanup removes
+them. Artifact creation or capture failure is an `ERROR`, with the available
+paths and structured execution errors preserved in the report.
+
+### Combined evaluation reports
+
+Functional runs produce a separately versioned `evaluation-1.0` envelope. It
+keeps the unchanged policy scan v1 report under `policy_scan`, the generic
+command result under `test_command`, and evaluation errors and a skip reason in
+their own fields. Durations and unique artifact paths live only in this
+envelope, so evaluation JSON is intentionally not byte-for-byte deterministic.
+
+Tests run after policy `PASS` or `FAIL`. They also run when all scan errors are
+source parsing errors, because runtime diagnostics may still be useful. Invalid
+policies, discovery/read/decoding failures, and internal checking failures
+block execution and produce a reason in `test_skip_reason`. Policy findings
+and captured test output remain separate.
+
+Combined exit codes are:
+
+- `0`: policy `PASS` and command `PASS`.
+- `1`: policy violations or command `FAIL`, with no blocking error.
+- `2`: policy `ERROR`, command `ERROR`/`TIMEOUT`/`INTERRUPTED`, a blocked test,
+  or report/artifact persistence failure. Errors take precedence over failures.
+
+Overall success therefore means both that the policies passed and that the
+supplied command exited successfully. The quality and coverage of functional
+verification depend entirely on the command and tests supplied by the user.
+
+`--json` emits exactly one JSON document; child output never streams into that
+stdout. `--output` works with or without `--json`, creates parent directories,
+and atomically replaces the destination with the same JSON document. Known
+source inputs, the policy file, test targets, and project configuration files
+are protected from accidental report overwrites. Expected failures are
+reported without tracebacks. `--verbose` never changes JSON schemas or data.
+When `--json` and `--output` are combined, the saved-path confirmation is sent
+to stderr so JSON stdout remains undecorated. A saved path is only shown after
+persistence succeeds.
+
 ## Architecture and maintenance
 
 - `codepatrol/policy/loader.py` validates YAML shape and rule data.
@@ -219,7 +376,17 @@ codepatrol scan demo/project/does-not-exist.py --policies demo/policies.yaml
   validation, location conversion, and policy application.
 - `codepatrol/scanner/models.py` defines findings, errors, status, deterministic
   ordering, and the report schema.
-- `codepatrol/reporting/` renders terminal and JSON output; `codepatrol/cli.py`
+- `codepatrol/testing/runner.py` exposes `parse_command()` and
+  `run_test_command()` as the framework-neutral process boundary;
+  `codepatrol/testing/models.py` defines `TestCommandResult` and the
+  `FrameworkResultAdapter` protocol. A future pytest, Jest, or other adapter
+  attaches through `FrameworkResultAdapter.interpret()` without changing
+  generic execution. No adapter or framework plugin is required today.
+- `codepatrol/evaluation.py` exposes `evaluate_scan()`, `test_skip_reason()`,
+  and `evaluation_exit_code()` for future repair-controller integration while
+  keeping policy and command results separate.
+- `codepatrol/reporting/` renders terminal and JSON output and owns protected,
+  atomic persistence; `codepatrol/cli.py`
   defines the Typer application, converts parsing failures to reports, and
   handles exit codes. Add future commands to its `typer.Typer` application with
   another `@cli.command()` function while keeping checker logic in the modules
@@ -239,8 +406,12 @@ codepatrol --help
 codepatrol scan --help
 codepatrol --version
 codepatrol scan demo/project --policies demo/policies.yaml
+codepatrol scan demo/project --policies demo/policies.yaml --verbose
 codepatrol scan demo/project --policies demo/policies.yaml --json
+codepatrol scan demo/project --policies demo/policies.yaml \
+  --test-command "python -m pytest demo/tests -q" --json
 ```
 
-The repository implements the checker and demonstrations only; it does not
-include agent integration or the complete experimental automation system.
+The repository does not yet make AI calls, repair code, or implement `--fix`.
+The generic result and adapter boundary are intended to support those later
+experiments without giving a future AI control over command selection.
