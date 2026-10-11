@@ -30,7 +30,7 @@ def test_cli_returns_one_for_violations(tmp_path, capsys):
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "Violations: 1" in output
-    assert "FAILED" in output
+    assert output.startswith("FAIL — 1 policy violation remains.")
 
 
 def test_cli_returns_zero_for_clean_scan(tmp_path, capsys):
@@ -53,7 +53,7 @@ def test_cli_returns_zero_for_clean_scan(tmp_path, capsys):
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "Violations: 0" in output
-    assert "PASSED" in output
+    assert output.startswith("PASS — Policies passed with no violations.")
 
 
 def test_cli_returns_two_for_bad_configuration(tmp_path, capsys):
@@ -62,7 +62,7 @@ def test_cli_returns_two_for_bad_configuration(tmp_path, capsys):
     )
 
     assert exit_code == 2
-    assert "Project does not exist" in capsys.readouterr().err
+    assert "Project does not exist" in capsys.readouterr().out
 
 
 def write_print_policy(tmp_path):
@@ -171,6 +171,7 @@ def test_scan_help_lists_all_arguments_and_options():
     assert "--policies" in result.stdout
     assert "--exclude" in result.stdout
     assert "--json" in result.stdout
+    assert "--verbose" in result.stdout
 
 
 def test_version_and_no_argument_behavior_are_preserved():
