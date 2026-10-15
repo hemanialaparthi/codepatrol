@@ -9,13 +9,47 @@ does not prove functional correctness.
 
 CodePatrol requires Python 3.11 or newer.
 
+From the project directory, create a virtual environment and install CodePatrol
+in editable mode with its development dependencies:
+
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -e '.[dev]'
 ```
 
 Runtime dependencies are PyYAML, Tree-sitter, the Tree-sitter Python grammar,
 and Typer for the command-line interface. Their supported version ranges are
 listed in `pyproject.toml`.
+
+### Running CodePatrol
+
+Each time you open a new terminal, change to the project directory and activate
+the existing virtual environment:
+
+```bash
+cd /path/to/codepatrol
+source .venv/bin/activate
+```
+
+You can then run CodePatrol, inspect its help, or run the test suite:
+
+```bash
+codepatrol scan demo/project --policies demo/policies.yaml
+codepatrol --help
+pytest
+```
+
+When you are finished, leave the virtual environment with `deactivate`. You can
+also run the tool without activating the environment:
+
+```bash
+.venv/bin/codepatrol scan demo/project --policies demo/policies.yaml
+```
+
+If `.venv` is deleted, repeat the installation commands above to recreate it.
+An exit status of `1` from a scan means CodePatrol found policy violations; it
+does not mean the tool crashed.
 
 ## Policy format and validation
 
