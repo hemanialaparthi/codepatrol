@@ -10,13 +10,19 @@ does not prove functional correctness.
 CodePatrol requires Python 3.11 or newer.
 
 From the project directory, create a virtual environment and install CodePatrol
-in editable mode with its development dependencies:
+with its development dependencies:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[dev]'
+python -m pip install '.[dev]'
 ```
+
+After changing CodePatrol's source code, run the final installation command
+again to update the installed CLI. A normal installation is recommended when
+the project is stored in a cloud-managed macOS Desktop folder: macOS can mark
+the `.pth` link created by an editable installation as hidden, which causes
+Python 3.14 to ignore the project package.
 
 Runtime dependencies are PyYAML, Tree-sitter, the Tree-sitter Python grammar,
 and Typer for the command-line interface. Their supported version ranges are
