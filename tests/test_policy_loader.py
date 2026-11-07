@@ -46,6 +46,64 @@ def test_missing_required_field_fails(tmp_path, field):
         load_policies(path, default_registry())
 
 
+@pytest.mark.parametrize(
+    "rule_body",
+    [
+        "pattern: print($MSG)\n    xpath: //node\n    message: Use logging.",
+        "message: Use logging.",
+    ],
+)
+def test_rule_requires_exactly_one_matching_mechanism(tmp_path, rule_body):
+    path = write_policy(
+        tmp_path / "policies.yaml",
+        f"""rules:
+  - id: invalid
+    language: python
+    {rule_body}
+""",
+    )
+
+    with pytest.raises(PolicyError, match="exactly one"):
+        load_policies(path, default_registry())
+
+
+def test_xpath_rule_loads_and_compiles(tmp_path):
+    path = write_policy(
+        tmp_path / "policies.yaml",
+        """rules:
+  - id: no-print
+    language: python
+    message: Use logging.
+    xpath: //node[@type='call']
+""",
+    )
+
+    registry = default_registry()
+    policies = load_policies(path, registry)
+    compiled = compile_policies(policies, registry)
+
+    assert policies[0].pattern is None
+    assert policies[0].xpath == "//node[@type='call']"
+    assert compiled[0].pattern is None
+    assert compiled[0].xpath is not None
+
+
+def test_invalid_xpath_is_rejected_before_scanning(tmp_path):
+    path = write_policy(
+        tmp_path / "policies.yaml",
+        """rules:
+  - id: invalid-xpath
+    language: python
+    message: Broken query.
+    xpath: //node[
+""",
+    )
+    registry = default_registry()
+
+    with pytest.raises(PolicyError, match="Rule 'invalid-xpath'.*invalid XPath"):
+        compile_policies(load_policies(path, registry), registry)
+
+
 def test_unsupported_language_fails(tmp_path):
     path = write_policy(
         tmp_path / "policies.yaml",
