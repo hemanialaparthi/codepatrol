@@ -11,7 +11,7 @@ from typing import Any
 from codepatrol.languages.base import LanguageAdapter
 from codepatrol.languages.registry import LanguageRegistry
 from codepatrol.policy.models import CompiledPolicy
-from codepatrol.scanner.matcher import find_matches, walk
+from codepatrol.scanner.matcher import find_match_details, find_matches, walk
 from codepatrol.scanner.xpath import (
     XPathConversionError,
     build_document,
@@ -91,9 +91,12 @@ class ProjectScanner:
             file_policies = policies_by_extension[source_file.suffix]
             adapter = file_policies[0][0]
             compiled = [item[1] for item in file_policies]
-            violations, errors = self._scan_file(source_file, adapter, compiled)
+            violations, errors, captures = self._scan_file(
+                source_file, adapter, compiled
+            )
             result.violations.extend(violations)
             result.errors.extend(errors)
+            result.match_captures.update(captures)
             if not errors:
                 result.files_scanned += 1
 
@@ -228,7 +231,11 @@ class ProjectScanner:
         source_file: Path,
         adapter: LanguageAdapter,
         policies: list[CompiledPolicy],
-    ) -> tuple[list[Violation], list[CheckError]]:
+    ) -> tuple[
+        list[Violation],
+        list[CheckError],
+        dict[tuple[str, Path, int, int], dict[str, Any]],
+    ]:
         try:
             source = source_file.read_bytes()
         except OSError as exc:
@@ -238,7 +245,7 @@ class ProjectScanner:
                     message=f"Could not read '{source_file}': {exc}.",
                     file=source_file,
                 )
-            ]
+            ], {}
 
         try:
             source.decode("utf-8")
@@ -252,7 +259,7 @@ class ProjectScanner:
                     start=location,
                     end=location,
                 )
-            ]
+            ], {}
 
         try:
             tree = adapter.parse_source(source)
@@ -263,13 +270,14 @@ class ProjectScanner:
                     message=f"Parser failed for '{source_file}': {exc}.",
                     file=source_file,
                 )
-            ]
+            ], {}
 
         parse_errors = _parse_errors(tree.root_node, source_file, source)
         if parse_errors:
-            return [], parse_errors
+            return [], parse_errors, {}
 
         violations: list[Violation] = []
+        captures_by_match: dict[tuple[str, Path, int, int], dict[str, Any]] = {}
         seen: set[tuple[Any, ...]] = set()
         xpath_error: CheckError | None = None
         try:
@@ -295,7 +303,7 @@ class ProjectScanner:
         for compiled_policy in policies:
             try:
                 if compiled_policy.pattern is not None:
-                    matches = find_matches(
+                    matches = find_match_details(
                         compiled_policy.pattern, tree.root_node, source
                     )
                 else:
@@ -308,6 +316,8 @@ class ProjectScanner:
                         compiled_policy.policy.id,
                     )
                 for node in matches:
+                    captures = getattr(node, "captures", {})
+                    node = getattr(node, "node", node)
                     start = _point_location(source, node.start_point)
                     end = _point_location(source, node.end_point)
                     key = (
@@ -330,8 +340,19 @@ class ProjectScanner:
                             matched_source=source[node.start_byte : node.end_byte].decode(
                                 "utf-8"
                             ),
+                            start_byte=node.start_byte,
+                            end_byte=node.end_byte,
                         )
                     )
+                    if captures:
+                        captures_by_match[
+                            (
+                                compiled_policy.policy.id,
+                                source_file,
+                                node.start_byte,
+                                node.end_byte,
+                            )
+                        ] = captures
             except Exception as exc:
                 return [], [
                     CheckError(
@@ -343,8 +364,8 @@ class ProjectScanner:
                         file=source_file,
                         policy_id=compiled_policy.policy.id,
                     )
-                ]
-        return violations, [xpath_error] if xpath_error is not None else []
+                ], {}
+        return violations, [xpath_error] if xpath_error is not None else [], captures_by_match
 
 
 def _report_root(inputs: list[Path]) -> Path:
