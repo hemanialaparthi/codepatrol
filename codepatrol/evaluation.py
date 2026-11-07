@@ -33,7 +33,7 @@ class EvaluationResult:
         if self.errors or self.policy_scan.status == "ERROR":
             return "ERROR"
         if self.test_command is None:
-            return "ERROR"
+            return self.policy_scan.status if self.test_skip_reason == "tests not run: no test command was configured" else "ERROR"
         if self.test_command.outcome in {"ERROR", "TIMEOUT", "INTERRUPTED"}:
             return "ERROR"
         if self.policy_scan.status == "FAIL" or self.test_command.outcome == "FAIL":
