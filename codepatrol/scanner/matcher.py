@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from typing import Any
+from dataclasses import dataclass
 
 from codepatrol.languages.base import CompiledPattern
 
@@ -13,16 +14,30 @@ NON_EXPRESSION_ARGUMENT_NODES = {
 }
 
 
+@dataclass(frozen=True)
+class StructuralMatch:
+    node: Any
+    captures: dict[str, Any]
+
+
 def find_matches(
     pattern: CompiledPattern, source_root: Any, source: bytes
 ) -> Iterator[Any]:
     """Yield source nodes structurally equal to *pattern*, allowing wildcards."""
+    for match in find_match_details(pattern, source_root, source):
+        yield match.node
+
+
+def find_match_details(
+    pattern: CompiledPattern, source_root: Any, source: bytes
+) -> Iterator[StructuralMatch]:
+    """Yield matched nodes and the captures used by deterministic fixes."""
     for candidate in walk(source_root):
         if not candidate.is_named or candidate.type == "comment":
             continue
         captures: dict[str, Any] = {}
         if _nodes_match(pattern, pattern.root, candidate, source, captures):
-            yield candidate
+            yield StructuralMatch(candidate, dict(captures))
 
 
 def walk(node: Any) -> Iterator[Any]:
