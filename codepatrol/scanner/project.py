@@ -12,6 +12,11 @@ from codepatrol.languages.base import LanguageAdapter
 from codepatrol.languages.registry import LanguageRegistry
 from codepatrol.policy.models import CompiledPolicy
 from codepatrol.scanner.matcher import find_matches, walk
+from codepatrol.scanner.xpath import (
+    XPathConversionError,
+    build_document,
+    evaluate_xpath,
+)
 from codepatrol.scanner.models import (
     CheckError,
     ScanResult,
@@ -266,9 +271,42 @@ class ProjectScanner:
 
         violations: list[Violation] = []
         seen: set[tuple[Any, ...]] = set()
+        xpath_error: CheckError | None = None
+        try:
+            xpath_document = (
+                build_document(tree.root_node, source)
+                if any(compiled_policy.xpath is not None for compiled_policy in policies)
+                else None
+            )
+        except XPathConversionError as exc:
+            start = _byte_offset_location(source, exc.byte_offset)
+            end = _byte_offset_location(source, exc.byte_end)
+            xpath_document = None
+            xpath_error = CheckError(
+                category="checking",
+                message=(
+                    f"XPath XML conversion failed for '{source_file}' at "
+                    f"{start.line}:{start.column}: {exc}"
+                ),
+                file=source_file,
+                start=start,
+                end=end,
+            )
         for compiled_policy in policies:
             try:
-                matches = find_matches(compiled_policy.pattern, tree.root_node, source)
+                if compiled_policy.pattern is not None:
+                    matches = find_matches(
+                        compiled_policy.pattern, tree.root_node, source
+                    )
+                else:
+                    assert compiled_policy.xpath is not None
+                    if xpath_document is None:
+                        continue
+                    matches = evaluate_xpath(
+                        compiled_policy.xpath,
+                        xpath_document,
+                        compiled_policy.policy.id,
+                    )
                 for node in matches:
                     start = _point_location(source, node.start_point)
                     end = _point_location(source, node.end_point)
@@ -306,7 +344,7 @@ class ProjectScanner:
                         policy_id=compiled_policy.policy.id,
                     )
                 ]
-        return violations, []
+        return violations, [xpath_error] if xpath_error is not None else []
 
 
 def _report_root(inputs: list[Path]) -> Path:
