@@ -2,6 +2,7 @@
 
 import os
 import sys
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any
@@ -26,6 +27,7 @@ from codepatrol.reporting import (
 )
 from codepatrol.scanner import CheckError, ProjectScanner, ScanResult
 from codepatrol.testing import parse_command
+from codepatrol.fixing.controller import FixResult, run_fix
 
 HELP_OPTIONS = {"-h", "--help"}
 
@@ -199,6 +201,14 @@ def scan_command(
             help="Show all findings, exact ranges, paths, arguments, and output details.",
         ),
     ] = False,
+    fix: Annotated[
+        bool,
+        typer.Option("--fix", help="Apply explicit deterministic policy fixes after staged validation."),
+    ] = False,
+    project_root: Annotated[
+        Path | None,
+        typer.Option("--project-root", metavar="PATH", help="Bounded project root required when fix mode cannot infer one."),
+    ] = None,
 ) -> int:
     """Scan Python files and directories against structural policies."""
     return _execute_scan_command(
@@ -211,6 +221,8 @@ def scan_command(
         test_timeout=test_timeout,
         output=output,
         verbose=verbose,
+        fix=fix,
+        project_root=project_root,
     )
 
 
@@ -235,6 +247,8 @@ def _execute_scan_command(
     test_timeout: float | None = None,
     output: Path | None = None,
     verbose: bool = False,
+    fix: bool = False,
+    project_root: Path | None = None,
 ) -> int:
     invocation_directory = Path.cwd().resolve()
     if test_command is None and (test_cwd is not None or test_timeout is not None):
@@ -245,6 +259,18 @@ def _execute_scan_command(
             evaluation=False,
         )
     root = _report_root(paths)
+    if fix:
+        return _execute_fix_command(
+            paths=paths,
+            policy_file=policy_file,
+            exclusions=exclusions,
+            json_output=json_output,
+            test_command=test_command,
+            test_cwd=test_cwd,
+            test_timeout=test_timeout,
+            output=output,
+            project_root=project_root,
+        )
     try:
         result = _run_scan(paths, policy_file, exclusions)
     except CodePatrolError as exc:
@@ -335,6 +361,84 @@ def _execute_scan_command(
             )
         )
     return evaluation.exit_code
+
+
+def _execute_fix_command(
+    *,
+    paths: list[Path],
+    policy_file: Path,
+    exclusions: list[str],
+    json_output: bool,
+    test_command: str | None,
+    test_cwd: Path | None,
+    test_timeout: float | None,
+    output: Path | None,
+    project_root: Path | None,
+) -> int:
+    root = _report_root(paths)
+    invocation_directory = Path.cwd().resolve()
+    if test_command is None and (test_cwd is not None or test_timeout is not None):
+        return _render_argument_error(
+            "Options '--test-cwd' and '--test-timeout' require --test-command.",
+            json_output=json_output,
+        )
+    try:
+        registry = default_registry()
+        policies = load_policies(policy_file, registry)
+        compiled = compile_policies(policies, registry)
+        fix_result = run_fix(
+            paths,
+            compiled,
+            registry,
+            exclusions,
+            test_command=test_command,
+            test_cwd=(test_cwd.expanduser().resolve(strict=False) if test_cwd else None),
+            test_timeout=test_timeout if test_timeout is not None else 60.0,
+            project_root=project_root,
+            artifact_root=invocation_directory / ".codepatrol" / "artifacts",
+        )
+    except (CodePatrolError, OSError, ValueError) as exc:
+        fix_result = FixResult(
+            initial=EvaluationResult(
+                policy_scan=_error_result(root, "configuration", str(exc), file=policy_file),
+                test_command=None,
+                test_skip_reason="tests not run: fix configuration is invalid",
+            ),
+            errors=[str(exc)],
+        )
+    serialized = json.dumps(fix_result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    save_error: str | None = None
+    if output is not None:
+        try:
+            destination = validate_report_destination(output, source_inputs=paths, policy_file=policy_file)
+            save_report_atomic(serialized, destination)
+        except (OSError, ValueError) as exc:
+            save_error = f"Could not save report: {exc}"
+            fix_result.errors.append(save_error)
+            serialized = json.dumps(fix_result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    if json_output:
+        typer.echo(serialized)
+    else:
+        typer.echo(_render_fix_terminal(fix_result, save_error))
+    return 2 if save_error else fix_result.exit_code
+
+
+def _render_fix_terminal(result: FixResult, save_error: str | None) -> str:
+    lines = [
+        f"{result.status} — deterministic fix result",
+        f"Initial evaluation: {result.initial.status}",
+        f"Proposed edits: {result.edits_proposed}",
+        f"Staged validation: {result.staged.status if result.staged else 'not run'}",
+        f"Tests ran: {'yes' if result.tests_ran else 'no'}",
+        f"Validation location: {result.validation_location}",
+        f"Application: {result.application}",
+        f"Source preserved: {'yes' if result.source_preserved else 'no'}",
+    ]
+    if result.errors:
+        lines.extend(f"Error: {error}" for error in result.errors)
+    if save_error:
+        lines.append(save_error)
+    return "\n".join(lines)
 
 
 def _present_scan_result(
