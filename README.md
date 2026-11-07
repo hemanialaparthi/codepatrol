@@ -153,7 +153,76 @@ parsed as executable Python.
 Matching is syntactic only. CodePatrol does not resolve imports, aliases,
 bindings, types, control flow, or data flow. Semantically equivalent code with a
 different AST does not necessarily match. Metavariables cannot capture argument
-or statement sequences, and there are no automatic fixes.
+or statement sequences, and there are no automatic fixes unless `--fix` is
+explicitly supplied. Fixes are developer-defined deterministic replacements;
+CodePatrol never asks a model to infer a replacement.
+
+### Deterministic fixes
+
+A rule may contain a fix with exactly one string field:
+
+```yaml
+rules:
+  - id: replace-legacy-send
+    language: python
+    pattern: "legacy_send($VALUE)"
+    message: "Use modern_send instead."
+    fix:
+      replacement: "modern_send($VALUE)"
+```
+
+Pattern replacements recognize the existing uppercase metavariable syntax
+outside strings and comments. Captures are substituted with their original
+source text, including internal formatting. Unknown captures, variadic
+captures, statement captures, and f-string template substitutions are not
+supported. Dollar text inside a string or comment remains literal. The
+complete edited file, rather than the incomplete replacement template, is
+validated as Python.
+
+XPath replacements are literal and replace exactly the selected Tree-sitter
+node. Selecting a callee identifier replaces only the identifier; selecting a
+call replaces the complete call. XPath fixes do not have captures.
+
+Run one deterministic repair batch with:
+
+```bash
+codepatrol scan project --policies policies.yaml --fix
+```
+
+Fix mode uses a bounded project root. A single directory input is its root; a
+single file requires a nearby `pyproject.toml`, `setup.cfg`, `tox.ini`, or
+`pytest.ini`, and multiple inputs require `--project-root`. Repair targets and
+the effective test working directory must be inside that root. The staged copy
+omits version-control directories, virtual environments, caches, and build
+outputs, while retaining project configuration, source, tests, and other
+untracked files. Symlinks anywhere in the project root are rejected so staged
+tests cannot follow a link back to the original checkout.
+
+Only one source file may be changed in this version. The supported staged test
+contract is a shell-free command such as `python -m pytest tests -q`; its
+executable may be an existing virtual-environment executable, but source and
+test paths must be relative to the staged working directory. CodePatrol does
+not rewrite arbitrary command arguments. Test commands can still access other
+external locations themselves, so staging is not a universal sandbox and
+cannot guarantee import provenance for arbitrary commands or editable
+installations.
+
+Baseline tests run whenever `--test-command` is configured, including when the
+initial policy scan passes. A baseline nonzero result is recorded and does not
+alone prevent the one repair attempt. Launch errors, timeouts, interruptions,
+and other infrastructure errors stop repair using the existing generic runner
+classifications. Candidate acceptance is all-or-nothing: staged policy checks
+and configured tests must pass. If tests are not configured, the report says
+`tests not run`.
+
+Fix mode reports a separate `fix-1.0` JSON envelope distinguishing the original
+evaluation, isolated staged validation, and application outcome. Staged tests
+are not described as tests rerun after applying the original file. The original
+file is snapshot-checked immediately before same-directory temporary-file
+replacement; permissions are preserved. This check leaves a normal race window
+against concurrent writers and is not transactional. Rejected candidates,
+no-op batches, conflicts, validation errors, and application conflicts preserve
+the original source.
 
 Both source files and patterns are checked for Tree-sitter error and missing
 nodes. This catches Tree-sitter parsing failures, but it does not establish
