@@ -3,3 +3,15 @@ rules:
     language: python
     pattern: "print($MSG)"
     message: "Production code should use logging instead of print."
+  - id: no-time-sleep
+    language: python
+    pattern: "time.sleep($DELAY)"
+    message: "Blocking sleep detected."
+  - id: no-print-in-calculate-total
+    language: python
+    xpath: >-
+      //node[@type='function_definition']
+        [node[@field='name' and @type='identifier' and @text='calculate_total']]
+        //node[@type='call']
+          [node[@field='function' and @type='identifier' and @text='print']]
+    message: "Do not call print inside calculate_total."
