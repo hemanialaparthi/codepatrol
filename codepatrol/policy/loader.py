@@ -7,11 +7,12 @@ import yaml
 
 from codepatrol.errors import PolicyError
 from codepatrol.languages.registry import LanguageRegistry
-from codepatrol.policy.models import Policy
+from codepatrol.policy.models import FixSpec, Policy
 
 REQUIRED_FIELDS = ("id", "language", "message")
 MATCH_FIELDS = {"pattern", "xpath"}
 TOP_LEVEL_FIELDS = {"rules"}
+FIX_FIELDS = {"replacement"}
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -88,7 +89,7 @@ def _validate_rule(
     if not isinstance(raw_rule, dict):
         raise PolicyError(f"Rule {index} must be a mapping.")
 
-    unknown_fields = set(raw_rule) - (set(REQUIRED_FIELDS) | MATCH_FIELDS)
+    unknown_fields = set(raw_rule) - (set(REQUIRED_FIELDS) | MATCH_FIELDS | {"fix"})
     if unknown_fields:
         fields = ", ".join(sorted(map(str, unknown_fields)))
         raise PolicyError(f"Rule {index} has unknown field(s): {fields}.")
@@ -122,10 +123,25 @@ def _validate_rule(
             f"'{values['language']}'."
         )
 
+    fix = None
+    if "fix" in raw_rule:
+        raw_fix = raw_rule["fix"]
+        if not isinstance(raw_fix, dict):
+            raise PolicyError(f"Rule {index} field 'fix' must be a mapping.")
+        unknown_fix_fields = set(raw_fix) - FIX_FIELDS
+        if unknown_fix_fields:
+            fields = ", ".join(sorted(map(str, unknown_fix_fields)))
+            raise PolicyError(f"Rule {index} fix has unknown field(s): {fields}.")
+        replacement = raw_fix.get("replacement")
+        if not isinstance(replacement, str):
+            raise PolicyError(f"Rule {index} fix requires a string 'replacement'.")
+        fix = FixSpec(replacement=replacement)
+
     return Policy(
         id=values["id"],
         language=values["language"],
         pattern=values.get("pattern"),
         message=values["message"],
         xpath=values.get("xpath"),
+        fix=fix,
     )
