@@ -56,6 +56,35 @@ def test_cli_returns_zero_for_clean_scan(tmp_path, capsys):
     assert output.startswith("PASS — Policies passed with no violations.")
 
 
+def test_cli_runs_documented_xpath_policy_end_to_end(tmp_path, capsys):
+    source = tmp_path / "calculate.py"
+    source.write_text(
+        "def calculate_total(value):\n    print(value)\n    return value\n",
+        encoding="utf-8",
+    )
+    policies = tmp_path / "policies.yaml"
+    policies.write_text(
+        """rules:
+  - id: no-print-in-calculate-total
+    language: python
+    message: Do not call print inside calculate_total.
+    xpath: >-
+      //node[@type='function_definition']
+        [node[@field='name' and @type='identifier' and @text='calculate_total']]
+        //node[@type='call']
+          [node[@field='function' and @type='identifier' and @text='print']]
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["scan", str(source), "--policies", str(policies), "--json"])
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert report["findings"][0]["rule_id"] == "no-print-in-calculate-total"
+    assert report["findings"][0]["matched_source"] == "print(value)"
+
+
 def test_cli_returns_two_for_bad_configuration(tmp_path, capsys):
     exit_code = main(
         ["scan", str(tmp_path / "missing"), "--policies", "missing.yaml"]
