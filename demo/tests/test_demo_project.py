@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from demo.project.billing import show_total
-from demo.project.calculator import add, item_count
+from demo.project.calculator import add, calculate_total, item_count
 from demo.project.users import create_user
 
 
@@ -14,6 +14,11 @@ class DemoProjectTests(unittest.TestCase):
 
     def test_counts_items(self) -> None:
         self.assertEqual(item_count(["alpha", "beta", "gamma"]), 3)
+
+    def test_calculates_total(self) -> None:
+        with patch("builtins.print") as print_mock:
+            self.assertEqual(calculate_total([2.5, 3.0]), 5.5)
+        print_mock.assert_called_once_with("Calculating total")
 
     def test_creates_user_and_announces_it(self) -> None:
         with patch("builtins.print") as print_mock:
