@@ -24,9 +24,9 @@ the project is stored in a cloud-managed macOS Desktop folder: macOS can mark
 the `.pth` link created by an editable installation as hidden, which causes
 Python 3.14 to ignore the project package.
 
-Runtime dependencies are PyYAML, Tree-sitter, the Tree-sitter Python grammar,
-and Typer for the command-line interface. Their supported version ranges are
-listed in `pyproject.toml`.
+Runtime dependencies are PyYAML, lxml, Tree-sitter, the Tree-sitter Python
+grammar, and Typer for the command-line interface. Their supported version
+ranges are listed in `pyproject.toml`.
 
 ### Running CodePatrol
 
@@ -69,13 +69,49 @@ rules:
     message: "Use logging instead."
 ```
 
-Every rule requires exactly these four non-blank string fields. `language` is
-required because CodePatrol has no default language; `python` is currently the
-only supported value. Rule IDs must be unique. Unknown fields, duplicate YAML
+Every rule requires non-blank `id`, `language`, and `message` fields plus exactly
+one of `pattern` or `xpath`. `language` is required because CodePatrol has no
+default language; `python` is currently the only supported value. Rule IDs must
+be unique. Unknown fields, duplicate YAML
 mapping keys, malformed YAML, malformed metavariables, invalid patterns, and
 identifiers beginning with the reserved `__CODEPATROL_META_` prefix are errors.
 All policies are loaded and compiled before source files are checked. An invalid
 policy is never skipped.
+
+XPath policies use XPath 1.0 and are detection-only. CodePatrol parses Python
+with Tree-sitter, then exposes named nodes as a local XML tree made only of
+`node` elements. Each element has `type` and `id` attributes; child elements
+may have a Tree-sitter `field` attribute, and only leaf nodes have a `text`
+attribute containing their exact source text. Unnamed punctuation and other
+unnamed nodes are omitted. Comments and strings remain named Tree-sitter nodes,
+so queries should constrain `type` when selecting executable syntax. XPath
+expressions must return source-associated elements; scalar results, attributes,
+text nodes, and other result types are errors. Empty node sets are clean
+results.
+
+The `id` values and their Tree-sitter mapping are local to one source file and
+one evaluation. XPath does not provide symbol resolution: names can refer to
+aliases or shadowed bindings. A descendant query inside a function also sees
+matching nodes inside nested functions unless the XPath explicitly excludes
+them. If a named leaf contains an XML 1.0-invalid character, XPath evaluation
+for that source file fails explicitly with a checking error that reports the
+file, source location, and Unicode code point. The source is never stripped,
+replaced, or silently encoded, and no XPath policy is evaluated against a
+partial XML representation.
+
+For example:
+
+```yaml
+rules:
+  - id: no-print-in-calculate-total
+    language: python
+    message: "Do not call print inside calculate_total."
+    xpath: >-
+      //node[@type='function_definition']
+        [node[@field='name' and @type='identifier' and @text='calculate_total']]
+        //node[@type='call']
+          [node[@field='function' and @type='identifier' and @text='print']]
+```
 
 Metavariable names use `$` followed by an uppercase letter, then uppercase
 letters, digits, or underscores, for example `$X` or `$ARG_2`. Dollar-prefixed
