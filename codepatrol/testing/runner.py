@@ -37,6 +37,7 @@ def run_test_command(
     timeout_seconds: float = 60.0,
     artifact_root: Path | None = None,
     preview_bytes: int = DEFAULT_PREVIEW_BYTES,
+    environment: dict[str, str] | None = None,
 ) -> TestCommandResult:
     """Execute exactly ``command`` with ``shell=False`` and capture log artifacts."""
     started = time.monotonic()
@@ -97,6 +98,7 @@ def run_test_command(
             creationflags=(
                 subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
             ),
+            env=environment,
         )
         try:
             deadline = time.monotonic() + timeout_seconds
