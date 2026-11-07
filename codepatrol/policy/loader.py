@@ -9,7 +9,8 @@ from codepatrol.errors import PolicyError
 from codepatrol.languages.registry import LanguageRegistry
 from codepatrol.policy.models import Policy
 
-REQUIRED_FIELDS = ("id", "language", "pattern", "message")
+REQUIRED_FIELDS = ("id", "language", "message")
+MATCH_FIELDS = {"pattern", "xpath"}
 TOP_LEVEL_FIELDS = {"rules"}
 
 
@@ -87,7 +88,7 @@ def _validate_rule(
     if not isinstance(raw_rule, dict):
         raise PolicyError(f"Rule {index} must be a mapping.")
 
-    unknown_fields = set(raw_rule) - set(REQUIRED_FIELDS)
+    unknown_fields = set(raw_rule) - (set(REQUIRED_FIELDS) | MATCH_FIELDS)
     if unknown_fields:
         fields = ", ".join(sorted(map(str, unknown_fields)))
         raise PolicyError(f"Rule {index} has unknown field(s): {fields}.")
@@ -99,10 +100,32 @@ def _validate_rule(
             raise PolicyError(f"Rule {index} is missing a non-empty '{field}'.")
         values[field] = value.strip()
 
+    present_matchers = [
+        field
+        for field in sorted(MATCH_FIELDS)
+        if isinstance(raw_rule.get(field), str) and raw_rule[field].strip()
+    ]
+    if len(present_matchers) != 1:
+        raise PolicyError(
+            f"Rule {index} must contain exactly one non-empty matching field: "
+            "'pattern' or 'xpath'."
+        )
+    for field in MATCH_FIELDS & set(raw_rule):
+        value = raw_rule[field]
+        if not isinstance(value, str) or not value.strip():
+            raise PolicyError(f"Rule {index} has a non-empty '{field}' requirement.")
+        values[field] = value.strip()
+
     if not registry.supports(values["language"]):
         raise PolicyError(
             f"Rule '{values['id']}' uses unsupported language "
             f"'{values['language']}'."
         )
 
-    return Policy(**values)
+    return Policy(
+        id=values["id"],
+        language=values["language"],
+        pattern=values.get("pattern"),
+        message=values["message"],
+        xpath=values.get("xpath"),
+    )
