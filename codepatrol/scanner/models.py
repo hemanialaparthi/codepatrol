@@ -30,6 +30,8 @@ class Violation:
     end_line: int
     end_column: int
     matched_source: str
+    start_byte: int | None = None
+    end_byte: int | None = None
 
     @property
     def start(self) -> SourceLocation:
@@ -88,6 +90,9 @@ class ScanResult:
     files_selected: int = 0
     files_excluded: int = 0
     root: Path = field(default_factory=Path.cwd)
+    match_captures: dict[tuple[str, Path, int, int], dict[str, Any]] = field(
+        default_factory=dict, repr=False
+    )
 
     @property
     def findings(self) -> list[Violation]:
