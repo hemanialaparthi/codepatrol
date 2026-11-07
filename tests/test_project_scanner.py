@@ -27,6 +27,17 @@ def compile_rules(registry, *patterns):
     return compile_policies(policies, registry)
 
 
+def compile_xpath_rule(registry, expression, *, rule_id="xpath-rule"):
+    policy = Policy(
+        id=rule_id,
+        language="python",
+        pattern=None,
+        message="Found by XPath.",
+        xpath=expression,
+    )
+    return compile_policies([policy], registry)
+
+
 def test_scan_recurses_ignores_directories_and_reports_locations(tmp_path):
     project = tmp_path / "project"
     nested = project / "src" / "nested"
@@ -64,6 +75,230 @@ def test_scan_applies_multiple_policies(tmp_path):
 
     assert result.policies_checked == 2
     assert len(result.violations) == 2
+
+
+def test_pattern_and_xpath_policies_are_evaluated_together(tmp_path):
+    source_file = tmp_path / "mixed.py"
+    source_file.write_text("print(value)\nsize = len(items)\n", encoding="utf-8")
+    registry = default_registry()
+    policies = compile_rules(registry, "print($X)") + compile_xpath_rule(
+        registry,
+        "//node[@type='call'][node[@field='function' and @text='len']]",
+        rule_id="no-len",
+    )
+
+    result = ProjectScanner(registry).scan(source_file, policies)
+
+    assert {item.rule_id for item in result.violations} == {"rule-0", "no-len"}
+
+
+def test_xpath_policy_maps_selected_call_to_existing_violation(tmp_path):
+    source_file = tmp_path / "calculate.py"
+    source_file.write_text(
+        "def calculate_total(value):\n    print(value)\n    return value\n",
+        encoding="utf-8",
+    )
+    registry = default_registry()
+    rules = compile_xpath_rule(
+        registry,
+        "//node[@type='function_definition']"
+        "[node[@field='name' and @type='identifier' and @text='calculate_total']]"
+        "//node[@type='call']"
+        "[node[@field='function' and @type='identifier' and @text='print']]",
+        rule_id="no-print-in-total",
+    )
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert result.status == "FAIL"
+    assert len(result.violations) == 1
+    violation = result.violations[0]
+    assert (violation.line, violation.column) == (2, 5)
+    assert violation.matched_source == "print(value)"
+
+
+def test_xpath_empty_node_set_is_a_clean_policy_result(tmp_path):
+    source_file = tmp_path / "clean.py"
+    source_file.write_text("value = 1\n", encoding="utf-8")
+    registry = default_registry()
+
+    result = ProjectScanner(registry).scan(
+        source_file, compile_xpath_rule(registry, "//node[@type='call']")
+    )
+
+    assert result.status == "PASS"
+    assert result.violations == []
+
+
+def test_xpath_xml_invalid_source_text_is_a_location_aware_checking_error(tmp_path):
+    source_file = tmp_path / "invalid_xml_text.py"
+    source_file.write_bytes(b"print(value)  # \x01\n")
+    registry = default_registry()
+    rules = compile_xpath_rule(
+        registry,
+        "//node[@type='call'][node[@field='function' and @text='print']]",
+        rule_id="xml-text",
+    )
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert result.status == "ERROR"
+    assert result.violations == []
+    error = result.errors[0]
+    assert error.category == "checking"
+    assert error.file == source_file
+    assert error.policy_id is None
+    assert (error.start.line, error.start.column) == (1, 17)
+    assert (error.end.line, error.end.column) == (1, 18)
+    assert "U+0001" in error.message
+
+
+def test_pattern_only_scan_remains_independent_of_xml_conversion(tmp_path):
+    source_file = tmp_path / "pattern_only.py"
+    source_file.write_bytes(b"print(value)  # \x01\n")
+    registry = default_registry()
+
+    result = ProjectScanner(registry).scan(
+        source_file, compile_rules(registry, "print($X)")
+    )
+
+    assert result.status == "FAIL"
+    assert result.errors == []
+    assert result.violations[0].matched_source == "print(value)"
+
+
+def test_mixed_scan_keeps_pattern_findings_when_xpath_conversion_fails(tmp_path):
+    source_file = tmp_path / "mixed_invalid_xml.py"
+    source_file.write_bytes(b"print(value)  # \x01\n")
+    registry = default_registry()
+    policies = compile_rules(registry, "print($X)") + compile_xpath_rule(
+        registry,
+        "//node[@type='call'][node[@field='function' and @text='print']]",
+        rule_id="xpath-print",
+    )
+
+    result = ProjectScanner(registry).scan(source_file, policies)
+
+    assert result.status == "ERROR"
+    assert [item.rule_id for item in result.violations] == ["rule-0"]
+    assert result.errors[0].category == "checking"
+
+
+def test_literal_backslash_escape_sequence_is_not_an_invalid_character(tmp_path):
+    source_file = tmp_path / "literal_escape.py"
+    source_file.write_text("value = r'\\x01'\n", encoding="utf-8")
+    registry = default_registry()
+    rules = compile_xpath_rule(registry, "//node[@type='string']")
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert result.status == "FAIL"
+    assert result.errors == []
+    assert result.violations[0].matched_source == "r'\\x01'"
+
+
+def test_xpath_distinguishes_direct_and_attribute_calls(tmp_path):
+    source_file = tmp_path / "calls.py"
+    source_file.write_text("print(value)\nlogger.print(value)\n", encoding="utf-8")
+    registry = default_registry()
+    rules = compile_xpath_rule(
+        registry,
+        "//node[@type='call'][node[@field='function' and @type='identifier' and @text='print']]",
+    )
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert [item.matched_source for item in result.violations] == ["print(value)"]
+
+
+def test_xpath_ignores_similar_comments_and_strings(tmp_path):
+    source_file = tmp_path / "text.py"
+    source_file.write_text(
+        '# print(value)\ntext = "print(value)"\nprint(value)\n', encoding="utf-8"
+    )
+    registry = default_registry()
+    rules = compile_xpath_rule(
+        registry,
+        "//node[@type='call'][node[@field='function' and @type='identifier' and @text='print']]",
+    )
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert [item.line for item in result.violations] == [3]
+
+
+def test_xpath_preserves_nested_function_descendant_semantics(tmp_path):
+    source_file = tmp_path / "nested.py"
+    source_file.write_text(
+        "def calculate_total(value):\n"
+        "    def nested():\n"
+        "        print(value)\n"
+        "    print(value)\n",
+        encoding="utf-8",
+    )
+    registry = default_registry()
+    rules = compile_xpath_rule(
+        registry,
+        "//node[@type='function_definition']"
+        "[node[@field='name' and @text='calculate_total']]"
+        "//node[@type='call'][node[@field='function' and @text='print']]",
+    )
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert [item.line for item in result.violations] == [3, 4]
+
+
+def test_xpath_rejects_scalar_results_as_checking_error(tmp_path):
+    source_file = tmp_path / "source.py"
+    source_file.write_text("value = 1\n", encoding="utf-8")
+    registry = default_registry()
+    rules = compile_xpath_rule(registry, "count(//node)", rule_id="scalar")
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert result.status == "ERROR"
+    assert result.errors[0].policy_id == "scalar"
+    assert "source-associated elements" in result.errors[0].message
+
+
+def test_xpath_rejects_attribute_results_as_checking_error(tmp_path):
+    source_file = tmp_path / "source.py"
+    source_file.write_text("value = 1\n", encoding="utf-8")
+    registry = default_registry()
+    rules = compile_xpath_rule(registry, "//node/@type", rule_id="attribute")
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert result.status == "ERROR"
+    assert result.errors[0].policy_id == "attribute"
+
+
+def test_xpath_invalid_source_has_existing_parse_error_semantics(tmp_path):
+    source_file = tmp_path / "broken.py"
+    source_file.write_text("def broken(:\n    pass\n", encoding="utf-8")
+    registry = default_registry()
+    rules = compile_xpath_rule(registry, "//node[@type='call']")
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    assert result.status == "ERROR"
+    assert result.errors[0].category == "parsing"
+
+
+def test_xpath_unicode_locations_use_existing_character_columns(tmp_path):
+    source_file = tmp_path / "unicode.py"
+    source_file.write_text('é = 1; print("x")\n', encoding="utf-8")
+    registry = default_registry()
+    rules = compile_xpath_rule(
+        registry,
+        "//node[@type='call'][node[@field='function' and @text='print']]",
+    )
+
+    result = ProjectScanner(registry).scan(source_file, rules)
+
+    finding = result.violations[0]
+    assert (finding.line, finding.column, finding.end_column) == (1, 8, 18)
 
 
 class FakeLanguageAdapter(LanguageAdapter):
