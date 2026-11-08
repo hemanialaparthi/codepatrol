@@ -85,6 +85,7 @@ class ProjectScanner:
             files_selected=len(discovery.files),
             files_excluded=discovery.excluded_files,
             root=root,
+            selected_files=list(discovery.files),
         )
 
         for source_file in discovery.files:
