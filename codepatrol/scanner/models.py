@@ -90,6 +90,7 @@ class ScanResult:
     files_selected: int = 0
     files_excluded: int = 0
     root: Path = field(default_factory=Path.cwd)
+    selected_files: list[Path] = field(default_factory=list, repr=False)
     match_captures: dict[tuple[str, Path, int, int], dict[str, Any]] = field(
         default_factory=dict, repr=False
     )
