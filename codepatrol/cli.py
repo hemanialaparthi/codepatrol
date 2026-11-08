@@ -3,6 +3,7 @@
 import os
 import sys
 import json
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any
@@ -28,6 +29,9 @@ from codepatrol.reporting import (
 from codepatrol.scanner import CheckError, ProjectScanner, ScanResult
 from codepatrol.testing import parse_command
 from codepatrol.fixing.controller import FixResult, run_fix
+from codepatrol.llm.controller import LLMRunConfig, run_llm_fix
+from codepatrol.llm.debug import DebugArtifactError, validate_debug_destination
+from codepatrol.llm.models import LLMFixResult, LLMRepairConfig
 
 HELP_OPTIONS = {"-h", "--help"}
 
@@ -205,6 +209,42 @@ def scan_command(
         bool,
         typer.Option("--fix", help="Apply explicit deterministic policy fixes after staged validation."),
     ] = False,
+    fix_with_llm: Annotated[
+        bool,
+        typer.Option("--fix-with-llm", help="Propose one bounded repair through LiteLLM."),
+    ] = False,
+    llm_model: Annotated[
+        str | None,
+        typer.Option("--llm-model", metavar="MODEL", help="LiteLLM provider/model identifier."),
+    ] = None,
+    llm_api_base: Annotated[
+        str | None,
+        typer.Option("--llm-api-base", metavar="URL", help="Optional custom LiteLLM endpoint."),
+    ] = None,
+    llm_api_key_env: Annotated[
+        str | None,
+        typer.Option("--llm-api-key-env", metavar="NAME", help="Environment variable containing the API key."),
+    ] = None,
+    llm_timeout: Annotated[
+        float | None,
+        typer.Option("--llm-timeout", metavar="SECONDS", help="Finite positive model request timeout."),
+    ] = None,
+    llm_max_tokens: Annotated[
+        int | None,
+        typer.Option("--llm-max-tokens", metavar="COUNT", help="Positive model response-token limit."),
+    ] = None,
+    llm_temperature: Annotated[
+        float | None,
+        typer.Option("--llm-temperature", metavar="VALUE", help="Optional model sampling parameter."),
+    ] = None,
+    llm_json_mode: Annotated[
+        bool,
+        typer.Option("--llm-json-mode", help="Request JSON mode from the provider."),
+    ] = False,
+    llm_debug_response: Annotated[
+        Path | None,
+        typer.Option("--llm-debug-response", metavar="PATH", help="Write the raw provider response to a protected local artifact."),
+    ] = None,
     project_root: Annotated[
         Path | None,
         typer.Option("--project-root", metavar="PATH", help="Bounded project root required when fix mode cannot infer one."),
@@ -222,6 +262,15 @@ def scan_command(
         output=output,
         verbose=verbose,
         fix=fix,
+        fix_with_llm=fix_with_llm,
+        llm_model=llm_model,
+        llm_api_base=llm_api_base,
+        llm_api_key_env=llm_api_key_env,
+        llm_timeout=llm_timeout,
+        llm_max_tokens=llm_max_tokens,
+        llm_temperature=llm_temperature,
+        llm_json_mode=llm_json_mode,
+        llm_debug_response=llm_debug_response,
         project_root=project_root,
     )
 
@@ -248,6 +297,15 @@ def _execute_scan_command(
     output: Path | None = None,
     verbose: bool = False,
     fix: bool = False,
+    fix_with_llm: bool = False,
+    llm_model: str | None = None,
+    llm_api_base: str | None = None,
+    llm_api_key_env: str | None = None,
+    llm_timeout: float | None = None,
+    llm_max_tokens: int | None = None,
+    llm_temperature: float | None = None,
+    llm_json_mode: bool = False,
+    llm_debug_response: Path | None = None,
     project_root: Path | None = None,
 ) -> int:
     invocation_directory = Path.cwd().resolve()
@@ -259,6 +317,47 @@ def _execute_scan_command(
             evaluation=False,
         )
     root = _report_root(paths)
+    llm_options = {
+        "--llm-model": llm_model,
+        "--llm-api-base": llm_api_base,
+        "--llm-api-key-env": llm_api_key_env,
+        "--llm-timeout": llm_timeout,
+        "--llm-max-tokens": llm_max_tokens,
+        "--llm-temperature": llm_temperature,
+        "--llm-debug-response": llm_debug_response,
+    }
+    if fix and fix_with_llm:
+        return _render_argument_error("Options '--fix' and '--fix-with-llm' are mutually exclusive.", json_output=json_output)
+    if not fix_with_llm and (llm_json_mode or any(value is not None for value in llm_options.values())):
+        supplied = "--llm-json-mode" if llm_json_mode else next(
+            name for name, value in llm_options.items() if value is not None
+        )
+        return _render_argument_error(f"Option '{supplied}' requires --fix-with-llm.", json_output=json_output)
+    if fix_with_llm:
+        if not llm_model or not llm_model.strip():
+            return _render_argument_error("Option '--llm-model' is required with --fix-with-llm.", json_output=json_output)
+        if llm_timeout is not None and (not math.isfinite(llm_timeout) or llm_timeout <= 0):
+            return _render_argument_error("Option '--llm-timeout' must be finite and greater than zero.", json_output=json_output)
+        if llm_max_tokens is not None and llm_max_tokens <= 0:
+            return _render_argument_error("Option '--llm-max-tokens' must be greater than zero.", json_output=json_output)
+        if llm_temperature is not None and (not math.isfinite(llm_temperature) or llm_temperature < 0):
+            return _render_argument_error("Option '--llm-temperature' must be finite and nonnegative.", json_output=json_output)
+        if llm_api_key_env is not None and not llm_api_key_env.strip():
+            return _render_argument_error("Option '--llm-api-key-env' must name a nonempty environment variable.", json_output=json_output)
+    if fix_with_llm:
+        return _execute_llm_command(
+            paths=paths, policy_file=policy_file, exclusions=exclusions, json_output=json_output,
+            test_command=test_command, test_cwd=test_cwd, test_timeout=test_timeout,
+            output=output, project_root=project_root,
+            llm_config=LLMRepairConfig(
+                model=llm_model.strip(), api_base=llm_api_base, api_key_env=llm_api_key_env,
+                timeout=llm_timeout if llm_timeout is not None else 60.0,
+                max_tokens=llm_max_tokens if llm_max_tokens is not None else 2048,
+                temperature=llm_temperature,
+                json_mode=llm_json_mode,
+            ),
+            debug_response_path=llm_debug_response,
+        )
     if fix:
         return _execute_fix_command(
             paths=paths,
@@ -421,6 +520,100 @@ def _execute_fix_command(
     else:
         typer.echo(_render_fix_terminal(fix_result, save_error))
     return 2 if save_error else fix_result.exit_code
+
+
+def _execute_llm_command(
+    *, paths: list[Path], policy_file: Path, exclusions: list[str], json_output: bool,
+    test_command: str | None, test_cwd: Path | None, test_timeout: float | None,
+    output: Path | None, project_root: Path | None, llm_config: LLMRepairConfig,
+    debug_response_path: Path | None,
+) -> int:
+    root = _report_root(paths)
+    invocation_directory = Path.cwd().resolve()
+    if test_command is None and (test_cwd is not None or test_timeout is not None):
+        return _render_argument_error("Options '--test-cwd' and '--test-timeout' require --test-command.", json_output=json_output)
+    if debug_response_path is not None:
+        try:
+            validate_debug_destination(
+                debug_response_path,
+                source_inputs=paths,
+                policy_file=policy_file,
+                normal_report=output,
+                test_arguments=parse_command(test_command) if test_command else [],
+                test_cwd=test_cwd,
+            )
+        except (DebugArtifactError, ValueError) as exc:
+            return _render_argument_error(str(exc), json_output=json_output)
+    try:
+        registry = default_registry()
+        policies = load_policies(policy_file, registry)
+        compiled = compile_policies(policies, registry)
+        result = run_llm_fix(
+            paths, compiled, registry, exclusions,
+            LLMRunConfig(
+                repair=llm_config, project_root=project_root,
+                test_command=test_command,
+                test_cwd=test_cwd.expanduser().resolve(strict=False) if test_cwd else None,
+                test_timeout=test_timeout if test_timeout is not None else 60.0,
+                artifact_root=invocation_directory / ".codepatrol" / "artifacts",
+                debug_response_path=debug_response_path,
+            ),
+        )
+    except (CodePatrolError, OSError, ValueError) as exc:
+        result = LLMFixResult(
+            initial=EvaluationResult(
+                policy_scan=_error_result(root, "configuration", str(exc), file=policy_file),
+                test_command=None,
+                test_skip_reason="tests not run: LLM repair configuration is invalid",
+            ),
+            model=llm_config.model,
+            api_base_configured=llm_config.api_base is not None,
+            timeout=llm_config.timeout,
+            max_tokens=llm_config.max_tokens,
+            temperature=llm_config.temperature,
+            json_mode=llm_config.json_mode,
+            debug_response_path=(str(debug_response_path) if debug_response_path else None),
+            errors=[str(exc)],
+            application="preserved: LLM repair configuration failed",
+        )
+    serialized = json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    save_error: str | None = None
+    if output is not None:
+        try:
+            destination = validate_report_destination(output, source_inputs=paths, policy_file=policy_file)
+            save_report_atomic(serialized, destination)
+        except (OSError, ValueError) as exc:
+            save_error = f"Could not save report: {exc}"
+            result.errors.append(save_error)
+            serialized = json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    if json_output:
+        typer.echo(serialized)
+    else:
+        typer.echo(_render_llm_terminal(result, save_error))
+    return 2 if save_error else result.exit_code
+
+
+def _render_llm_terminal(result: LLMFixResult, save_error: str | None) -> str:
+    lines = [
+        f"{result.status} — LLM repair result",
+        f"Initial evaluation: {result.initial.status}",
+        f"Request attempted: {'yes' if result.request_attempted else 'no'}",
+        f"Provider response received: {'yes' if result.provider_response_received else 'no'}",
+        f"Candidate parsed: {'yes' if result.candidate_parsed else 'no'}",
+        f"Staged validation: {result.staged.status if result.staged else 'not run'}",
+        f"Tests ran: {'yes' if result.tests_ran else 'no'}",
+        f"Validation location: {result.validation_location}",
+        f"Application: {result.application}",
+        f"Source preserved: {'yes' if result.source_preserved else 'no'}",
+    ]
+    if result.candidate_diff:
+        lines.extend(["Candidate diff:", result.candidate_diff.rstrip("\n")])
+    if result.explanation:
+        lines.append(f"Explanation: {result.explanation}")
+    lines.extend(f"Error: {error}" for error in result.errors)
+    if save_error:
+        lines.append(save_error)
+    return "\n".join(lines)
 
 
 def _render_fix_terminal(result: FixResult, save_error: str | None) -> str:
@@ -593,6 +786,13 @@ def _missing_option_value(arguments: Sequence[str]) -> str | None:
         "--test-command",
         "--test-cwd",
         "--test-timeout",
+        "--llm-model",
+        "--llm-api-base",
+        "--llm-api-key-env",
+        "--llm-timeout",
+        "--llm-max-tokens",
+        "--llm-temperature",
+        "--llm-debug-response",
     }
     for index in range(scan_index + 1, len(arguments)):
         option = arguments[index]
