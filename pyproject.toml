@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
+llm = ["litellm-core==1.108.2"]
 
 [project.scripts]
 codepatrol = "codepatrol.cli:main"
