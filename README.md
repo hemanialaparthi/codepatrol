@@ -224,6 +224,86 @@ against concurrent writers and is not transactional. Rejected candidates,
 no-op batches, conflicts, validation errors, and application conflicts preserve
 the original source.
 
+### Optional LLM-assisted repair
+
+LLM repair is an explicit, separate mode. Install the optional LiteLLM Core
+extra; the project pins `litellm-core==1.108.2` and does not install the
+overlapping `litellm` distribution:
+
+```bash
+uv sync --extra llm
+```
+
+LiteLLM provider-default credentials remain in their documented environment
+variables. An explicit credential variable can be selected without putting the
+secret in policy YAML:
+
+```bash
+export OPENAI_API_KEY="..."
+codepatrol scan project --policies policies.yaml \
+  --fix-with-llm --llm-model openai/gpt-4o-mini \
+  --llm-timeout 60 --llm-max-tokens 2048
+
+export LOCAL_LLM_KEY="..."
+codepatrol scan project --policies policies.yaml \
+  --fix-with-llm --llm-model openai/local-model \
+  --llm-api-base http://localhost:8000/v1 \
+  --llm-api-key-env LOCAL_LLM_KEY
+```
+
+LLM mode initially requires exactly one discovered, permitted Python source
+file. Directory inputs that discover multiple Python files are rejected before
+any model request; use one file or exclusions to make the target unambiguous.
+`--fix` and `--fix-with-llm` cannot be combined.
+
+The request includes the exact source, applicable pattern or XPath expressions,
+messages, locations, explicit deterministic fix configuration when present,
+bounded test feedback, and bounded project instructions. The model must return
+one strict JSON object containing either a complete replacement file or a
+`needs_guidance` explanation. A candidate requires top-level `outcome` and
+`replacement`; `explanation` is optional for candidates but must be a string
+when present. `needs_guidance` requires a non-empty explanation. Source is
+never silently truncated. Empty,
+malformed, incomplete, oversized, out-of-scope, and no-op candidates are
+rejected without changing the original.
+
+The candidate is shown as a human-readable diff and is validated in the
+existing isolated staging pipeline. A separate `llm-fix-1.0` report records
+the original evaluation, request/provider metadata, parsed response, staged
+validation, application outcome, test provenance, and whether the source was
+preserved. Staged test results remain staged results after application; tests
+are not described as rerun on the applied checkout unless they actually are.
+Policy and test validation do not prove minimality or detect every unrelated
+behavioral change. Model-generated repairs are proposals, not evidence of
+correctness. LiteLLM retry controls are set to zero for the supported direct
+provider path; provider SDKs may have behavior outside CodePatrol's control, so
+CodePatrol does not claim exactly one network transmission for every provider.
+
+An opt-in manual smoke test, which may incur provider charges, is:
+
+```bash
+uv run --extra llm codepatrol scan path/to/one_file.py \
+  --policies path/to/policies.yaml \
+  --fix-with-llm --llm-model "$CODEPATROL_LLM_MODEL" \
+  --llm-timeout 60 --llm-max-tokens 2048
+```
+
+Do not run that command until the selected provider, endpoint, and credential
+are intentionally configured.
+
+`--llm-json-mode` is also opt-in and may be used with or without
+`--llm-api-base`. It forwards LiteLLM's
+`response_format={"type": "json_object"}` request exactly as requested. Provider
+support is not inferred and unsupported providers fail clearly; CodePatrol still
+validates the returned object against its candidate/`needs_guidance` schema.
+
+For diagnosis, `--llm-debug-response PATH` writes an explicit local
+`llm-debug-response-1.0` artifact before response parsing. The artifact stores
+the exact response text, or records absent/non-string content explicitly, and
+uses restrictive permissions. It cannot overwrite source files, policies,
+tests, or the normal report destination. Response content may contain sensitive
+project text; do not commit the artifact.
+
 Both source files and patterns are checked for Tree-sitter error and missing
 nodes. This catches Tree-sitter parsing failures, but it does not establish
 runtime correctness or every restriction enforced by the Python compiler. For
